@@ -1,9 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Language, Shipment } from '../types/shipment';
+import { UserProfile } from '../types/auth';
 import { formatCAD, formatDate, formatDistance, getCategoryLabel } from '../lib/formatters';
 import {
+  acceptProposalApi,
+  ApiEscrow,
+  ApiProposal,
+  fetchShipmentProposalsApi,
+  submitProposalApi,
+} from '../lib/api';
+import {
   X,
-  MapPin,
   Calendar,
   Weight,
   Truck,
@@ -20,49 +27,126 @@ import {
 
 interface ShipmentModalProps {
   shipment: Shipment | null;
+  currentUser?: UserProfile | null;
   currentLang: Language;
   onClose: () => void;
   onSuccessToast?: (msg: string) => void;
   onOpenChat: (shipment: Shipment) => void;
-  onOpenDeliveryCodeModal: (shipment: Shipment) => void;
+  onOpenDeliveryCodeModal: (shipment: Shipment, deliveryCode?: string | null) => void;
+  onOfferAccepted?: (shipment: Shipment, deliveryCode: string) => void;
 }
 
 export const ShipmentModal: React.FC<ShipmentModalProps> = ({
   shipment,
+  currentUser,
   currentLang,
   onClose,
   onSuccessToast,
   onOpenChat,
   onOpenDeliveryCodeModal,
+  onOfferAccepted,
 }) => {
   const [offerAmountCAD, setOfferAmountCAD] = useState<number>(shipment?.priceCAD || 50);
-  const [tripDate, setTripDate] = useState<string>('2026-09-22');
+  const [tripDate, setTripDate] = useState<string>(shipment?.departureDate || '2026-12-15');
   const [driverMessage, setDriverMessage] = useState<string>('');
   const [isSubmitted, setIsSubmitted] = useState<boolean>(false);
+  const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [showEscrowBreakdown, setShowEscrowBreakdown] = useState<boolean>(false);
+  const [proposals, setProposals] = useState<ApiProposal[]>([]);
+  const [escrow, setEscrow] = useState<ApiEscrow | null>(null);
+  const [isSender, setIsSender] = useState<boolean>(false);
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!shipment) return;
+    setOfferAmountCAD(shipment.priceCAD);
+    setTripDate(shipment.departureDate || '2026-12-15');
+    setDriverMessage('');
+    setIsSubmitted(false);
+    setErrorMsg(null);
+
+    let active = true;
+    fetchShipmentProposalsApi(shipment.id)
+      .then((data) => {
+        if (!active) return;
+        setProposals(data.proposals);
+        setEscrow(data.escrow);
+        setIsSender(data.isSender);
+      })
+      .catch(() => {
+        if (!active) return;
+        setProposals([]);
+        setEscrow(null);
+        setIsSender(Boolean(currentUser && shipment.senderId === currentUser.id));
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [shipment?.id, currentUser?.id]);
 
   if (!shipment) return null;
 
-  // Calcul du séquestre Stripe et net conducteur selon les specs V2 (15% commission Cocolis)
   const platformFee = Math.round((offerAmountCAD || shipment.priceCAD) * 0.15);
   const netDriverPayout = (offerAmountCAD || shipment.priceCAD) - platformFee;
 
-  const handleSendOffer = (e: React.FormEvent) => {
+  const handleSendOffer = async (e: React.FormEvent) => {
     e.preventDefault();
-    setIsSubmitted(true);
-    if (onSuccessToast) {
-      onSuccessToast(
-        currentLang === 'fr'
-          ? `Offre de ${formatCAD(offerAmountCAD, 'fr')} transmise sous séquestre !`
-          : `Escrow offer of ${formatCAD(offerAmountCAD, 'en')} sent successfully!`
+    setErrorMsg(null);
+    setIsSubmitting(true);
+    try {
+      const created = await submitProposalApi(
+        shipment.id,
+        offerAmountCAD,
+        tripDate,
+        driverMessage || undefined
       );
+      setProposals((prev) => [created, ...prev]);
+      setIsSubmitted(true);
+      if (onSuccessToast) {
+        onSuccessToast(
+          currentLang === 'fr'
+            ? `Offre de ${formatCAD(offerAmountCAD, 'fr')} enregistrée dans Neon Postgres !`
+            : `Offer of ${formatCAD(offerAmountCAD, 'en')} saved to Neon Postgres!`
+        );
+      }
+    } catch (err) {
+      setErrorMsg(
+        err instanceof Error
+          ? err.message
+          : currentLang === 'fr'
+            ? "Impossible d'envoyer cette offre."
+            : 'Unable to submit offer.'
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  const handleAcceptProposal = async (proposalId: string) => {
+    setAcceptingId(proposalId);
+    setErrorMsg(null);
+    try {
+      const res = await acceptProposalApi(proposalId);
+      setEscrow(res.escrow);
+      setProposals((prev) =>
+        prev.map((p) => ({ ...p, isAccepted: p.id === proposalId }))
+      );
+      if (onOfferAccepted) {
+        onOfferAccepted(shipment, res.deliveryCode);
+      }
+      onClose();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Erreur lors de l’acceptation.');
+    } finally {
+      setAcceptingId(null);
     }
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/85 backdrop-blur-md animate-in fade-in duration-200">
       <div className="relative w-full max-w-2xl glass-panel rounded-3xl overflow-hidden border border-slate-700 shadow-2xl">
-        
         {/* Header */}
         <div className="flex items-center justify-between p-5 border-b border-slate-800 bg-slate-900/60">
           <div className="flex items-center space-x-3">
@@ -88,7 +172,6 @@ export const ShipmentModal: React.FC<ShipmentModalProps> = ({
 
         {/* Content Body */}
         <div className="p-6 max-h-[80vh] overflow-y-auto space-y-6">
-          
           {/* Title & Description */}
           <div className="pt-1">
             <div className="flex items-start justify-between gap-4">
@@ -101,7 +184,6 @@ export const ShipmentModal: React.FC<ShipmentModalProps> = ({
                 </p>
               </div>
 
-              {/* Bouton Chat Sécurisé */}
               <button
                 type="button"
                 onClick={() => {
@@ -126,8 +208,6 @@ export const ShipmentModal: React.FC<ShipmentModalProps> = ({
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              
-              {/* Origin */}
               <div className="flex items-start space-x-3 bg-slate-800/50 p-3 rounded-xl border border-slate-700/50">
                 <div className="w-8 h-8 rounded-full bg-emerald-500/20 text-emerald-400 flex items-center justify-center font-black text-xs shrink-0">
                   A
@@ -145,7 +225,6 @@ export const ShipmentModal: React.FC<ShipmentModalProps> = ({
                 </div>
               </div>
 
-              {/* Destination */}
               <div className="flex items-start space-x-3 bg-slate-800/50 p-3 rounded-xl border border-slate-700/50">
                 <div className="w-8 h-8 rounded-full bg-teal-400/20 text-teal-300 flex items-center justify-center font-black text-xs shrink-0">
                   B
@@ -162,7 +241,6 @@ export const ShipmentModal: React.FC<ShipmentModalProps> = ({
                   </div>
                 </div>
               </div>
-
             </div>
 
             <div className="flex items-center justify-between text-xs text-slate-400 pt-2 border-t border-slate-800">
@@ -194,7 +272,9 @@ export const ShipmentModal: React.FC<ShipmentModalProps> = ({
             <div className="glass-card p-3 rounded-xl text-center">
               <ShieldCheck className="w-4 h-4 text-emerald-400 mx-auto mb-1" />
               <span className="text-[10px] text-slate-400 block">{currentLang === 'fr' ? 'Séquestre Stripe' : 'Stripe Escrow'}</span>
-              <span className="text-xs font-bold text-emerald-400">100% {currentLang === 'fr' ? 'Garanti' : 'Guaranteed'}</span>
+              <span className="text-xs font-bold text-emerald-400">
+                {escrow ? escrow.status : currentLang === 'fr' ? '100% Garanti' : '100% Guaranteed'}
+              </span>
             </div>
           </div>
 
@@ -241,6 +321,58 @@ export const ShipmentModal: React.FC<ShipmentModalProps> = ({
             )}
           </div>
 
+          {/* Offres reçues en base Neon */}
+          {proposals.length > 0 && (
+            <div className="bg-slate-900/70 p-4 rounded-2xl border border-slate-800 space-y-3">
+              <h4 className="text-xs font-extrabold uppercase tracking-wider text-slate-300">
+                {currentLang === 'fr'
+                  ? `Offres reçues (${proposals.length})`
+                  : `Received Offers (${proposals.length})`}
+              </h4>
+              <div className="space-y-2">
+                {proposals.map((p) => (
+                  <div
+                    key={p.id}
+                    className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 flex items-center justify-between gap-3 text-xs"
+                  >
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <strong className="text-white">{p.driver.name}</strong>
+                        <span className="flex items-center space-x-0.5 text-amber-400 text-[11px]">
+                          <Star className="w-3 h-3 fill-amber-400" />
+                          <span>{p.driver.rating.toFixed(1)}</span>
+                        </span>
+                        {p.isAccepted && (
+                          <span className="px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 text-[10px] font-bold">
+                            ACCEPTÉE
+                          </span>
+                        )}
+                      </div>
+                      {p.driverMessage && (
+                        <p className="text-slate-400 text-[11px] mt-0.5">{p.driverMessage}</p>
+                      )}
+                    </div>
+                    <div className="flex items-center space-x-2 shrink-0">
+                      <span className="font-extrabold text-emerald-400">
+                        {formatCAD(p.offerAmountCAD, currentLang)}
+                      </span>
+                      {(isSender || currentUser?.role === 'ADMIN') && !p.isAccepted && (
+                        <button
+                          type="button"
+                          disabled={acceptingId === p.id}
+                          onClick={() => handleAcceptProposal(p.id)}
+                          className="px-2.5 py-1.5 rounded-lg bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-[11px] disabled:opacity-50"
+                        >
+                          {acceptingId === p.id ? '...' : currentLang === 'fr' ? 'Accepter' : 'Accept'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Bouton de confirmation de livraison (Code unique) */}
           <div className="flex items-center justify-between bg-emerald-500/10 p-4 rounded-2xl border border-emerald-500/20">
             <div className="flex items-center space-x-2.5">
@@ -250,7 +382,11 @@ export const ShipmentModal: React.FC<ShipmentModalProps> = ({
                   {currentLang === 'fr' ? 'Déjà livré ?' : 'Already delivered?'}
                 </span>
                 <span className="text-[11px] text-slate-400">
-                  {currentLang === 'fr' ? 'Saisissez le code 6 chiffres pour recevoir les fonds' : 'Enter 6-digit code to release payout'}
+                  {escrow?.deliveryCode
+                    ? `Code séquestre généré : ${escrow.deliveryCode}`
+                    : currentLang === 'fr'
+                      ? 'Saisissez le code 6 chiffres pour recevoir les fonds'
+                      : 'Enter 6-digit code to release payout'}
                 </span>
               </div>
             </div>
@@ -259,13 +395,19 @@ export const ShipmentModal: React.FC<ShipmentModalProps> = ({
               type="button"
               onClick={() => {
                 onClose();
-                onOpenDeliveryCodeModal(shipment);
+                onOpenDeliveryCodeModal(shipment, escrow?.deliveryCode ?? null);
               }}
               className="px-3.5 py-1.5 rounded-xl bg-emerald-500 hover:bg-emerald-400 text-slate-950 font-black text-xs transition-colors shadow"
             >
               Entrer Code 6 Chiffres
             </button>
           </div>
+
+          {errorMsg && (
+            <div className="p-3 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-bold">
+              {errorMsg}
+            </div>
+          )}
 
           {/* Interactive Offer Form */}
           {isSubmitted ? (
@@ -276,8 +418,8 @@ export const ShipmentModal: React.FC<ShipmentModalProps> = ({
               </h4>
               <p className="text-xs text-slate-300">
                 {currentLang === 'fr'
-                  ? 'L\'expéditeur a reçu votre offre. Le code de confirmation à 6 chiffres sera généré au paiement.'
-                  : 'Sender received your offer. The 6-digit security code will generate upon payment.'}
+                  ? "Votre offre est enregistrée dans Neon Postgres. Le code à 6 chiffres sera généré dès l'acceptation par l'expéditeur."
+                  : 'Your offer is saved in Neon Postgres. The 6-digit code will generate once accepted by the sender.'}
               </p>
             </div>
           ) : (
@@ -321,33 +463,34 @@ export const ShipmentModal: React.FC<ShipmentModalProps> = ({
 
               <div>
                 <label className="block text-xs font-bold text-slate-300 mb-1">
-                  {currentLang === 'fr' ? 'Message pour l\'expéditeur (optionnel)' : 'Message for sender (optional)'}
+                  {currentLang === 'fr' ? "Message pour l'expéditeur (optionnel)" : 'Message for sender (optional)'}
                 </label>
                 <input
                   type="text"
                   value={driverMessage}
                   onChange={(e) => setDriverMessage(e.target.value)}
-                  placeholder={currentLang === 'fr' ? 'ex: J\'ai un grand coffre et je passe par là ce jour-là.' : 'e.g. Spacious trunk, driving by on that day.'}
+                  placeholder={currentLang === 'fr' ? "ex: J'ai un grand coffre et je passe par là ce jour-là." : 'e.g. Spacious trunk, driving by on that day.'}
                   className="w-full px-3.5 py-2 bg-slate-900 border border-slate-700 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 />
               </div>
 
               <button
                 type="submit"
-                className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-extrabold text-xs shadow-lg shadow-emerald-500/20 transition-transform transform active:scale-95 flex items-center justify-center space-x-2"
+                disabled={isSubmitting}
+                className="w-full py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-extrabold text-xs shadow-lg shadow-emerald-500/20 transition-transform transform active:scale-95 flex items-center justify-center space-x-2 disabled:opacity-60"
               >
                 <DollarSign className="w-4 h-4" />
                 <span>
-                  {currentLang === 'fr' 
-                    ? `Réserver ce trajet & sécuriser ${formatCAD(netDriverPayout, 'fr')} net` 
-                    : `Reserve trip & secure ${formatCAD(netDriverPayout, 'en')} net`}
+                  {isSubmitting
+                    ? currentLang === 'fr' ? 'Envoi en cours...' : 'Submitting...'
+                    : currentLang === 'fr'
+                      ? `Réserver ce trajet & sécuriser ${formatCAD(netDriverPayout, 'fr')} net`
+                      : `Reserve trip & secure ${formatCAD(netDriverPayout, 'en')} net`}
                 </span>
               </button>
             </form>
           )}
-
         </div>
-
       </div>
     </div>
   );

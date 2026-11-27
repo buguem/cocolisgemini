@@ -48,6 +48,7 @@ export interface Shipment {
   departureDate: string; // ISO String format YYYY-MM-DD
   flexibleDate: boolean;
   status: 'AVAILABLE' | 'IN_TRANSIT' | 'DELIVERED';
+  senderId?: string;
   senderName: string;
   senderRating: number;
   senderTripsCount: number;

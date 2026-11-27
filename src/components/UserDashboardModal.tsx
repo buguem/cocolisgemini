@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { UserProfile } from '../types/auth';
 import { Language, Shipment } from '../types/shipment';
 import { formatCAD, formatDate, formatDistance } from '../lib/formatters';
-import { X, User, Package, Truck, Wallet, ShieldCheck, Star, Calendar, ArrowRight, ArrowDownRight, CheckCircle2 } from 'lucide-react';
+import { DashboardResponse, fetchDashboardApi } from '../lib/api';
+import { X, Package, Truck, Wallet, ShieldCheck, Star } from 'lucide-react';
 
 interface UserDashboardModalProps {
   isOpen: boolean;
@@ -23,8 +24,31 @@ export const UserDashboardModal: React.FC<UserDashboardModalProps> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<'shipments' | 'trips' | 'wallet'>('shipments');
   const [payoutRequested, setPayoutRequested] = useState(false);
+  const [dashboard, setDashboard] = useState<DashboardResponse | null>(null);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    let active = true;
+    fetchDashboardApi()
+      .then((data) => {
+        if (active) setDashboard(data);
+      })
+      .catch(() => {
+        if (active) setDashboard(null);
+      });
+    return () => {
+      active = false;
+    };
+  }, [isOpen, currentUser.id]);
 
   if (!isOpen) return null;
+
+  const displayedShipments = dashboard
+    ? dashboard.sentShipments
+    : userShipments.filter((s) => !s.senderId || s.senderId === currentUser.id);
+  const displayedTrips = dashboard?.driverProposals ?? [];
+  const escrowBalanceCAD = dashboard ? dashboard.wallet.escrowBalanceCAD : currentUser.escrowBalanceCAD;
+  const totalEarnedCAD = dashboard ? dashboard.wallet.totalEarnedCAD : currentUser.totalEarnedCAD;
 
   const handleRequestPayout = () => {
     setPayoutRequested(true);
@@ -32,8 +56,8 @@ export const UserDashboardModal: React.FC<UserDashboardModalProps> = ({
       setPayoutRequested(false);
       alert(
         currentLang === 'fr'
-          ? `Virement Stripe Connect de ${formatCAD(currentUser.escrowBalanceCAD, 'fr')} demandé vers votre compte bancaire canadien.`
-          : `Stripe Connect payout of ${formatCAD(currentUser.escrowBalanceCAD, 'en')} requested to your Canadian bank account.`
+          ? `Virement Stripe Connect de ${formatCAD(escrowBalanceCAD, 'fr')} demandé vers votre compte bancaire canadien.`
+          : `Stripe Connect payout of ${formatCAD(escrowBalanceCAD, 'en')} requested to your Canadian bank account.`
       );
     }, 1200);
   };
@@ -87,7 +111,7 @@ export const UserDashboardModal: React.FC<UserDashboardModalProps> = ({
             }`}
           >
             <Package className="w-4 h-4" />
-            <span>{currentLang === 'fr' ? 'Mes Expéditions Envoyées' : 'My Sent Shipments'} ({userShipments.length})</span>
+            <span>{currentLang === 'fr' ? 'Mes Expéditions Envoyées' : 'My Sent Shipments'} ({displayedShipments.length})</span>
           </button>
 
           <button
@@ -99,7 +123,7 @@ export const UserDashboardModal: React.FC<UserDashboardModalProps> = ({
             }`}
           >
             <Truck className="w-4 h-4" />
-            <span>{currentLang === 'fr' ? 'Mes Trajets Conducteur' : 'My Driver Trips'}</span>
+            <span>{currentLang === 'fr' ? 'Mes Trajets Conducteur' : 'My Driver Trips'} ({displayedTrips.length})</span>
           </button>
 
           <button
@@ -121,12 +145,12 @@ export const UserDashboardModal: React.FC<UserDashboardModalProps> = ({
           {/* Tab 1: Mes Expéditions */}
           {activeTab === 'shipments' && (
             <div className="space-y-3">
-              {userShipments.length === 0 ? (
+              {displayedShipments.length === 0 ? (
                 <div className="p-8 text-center text-slate-400 text-xs">
-                  {currentLang === 'fr' ? 'Vous n\'avez encore envoyé aucune expédition.' : 'You haven\'t posted any shipments yet.'}
+                  {currentLang === 'fr' ? "Vous n'avez encore envoyé aucune expédition." : "You haven't posted any shipments yet."}
                 </div>
               ) : (
-                userShipments.map((s) => (
+                displayedShipments.map((s) => (
                   <div
                     key={s.id}
                     onClick={() => {
@@ -166,23 +190,52 @@ export const UserDashboardModal: React.FC<UserDashboardModalProps> = ({
           {/* Tab 2: Mes Trajets Conducteur */}
           {activeTab === 'trips' && (
             <div className="space-y-3">
-              <div className="glass-card p-4 rounded-2xl border border-slate-800 flex items-center justify-between">
-                <div>
-                  <span className="text-xs text-emerald-400 font-bold block">Trajet actif : Montréal → Québec</span>
-                  <span className="text-sm font-bold text-white">Livraison Canapé Vintage</span>
-                  <span className="text-xs text-slate-400 block">Fonds sous séquestre Stripe : 120.00 $ CAD</span>
+              {displayedTrips.length === 0 ? (
+                <div className="p-8 text-center text-slate-400 text-xs">
+                  {currentLang === 'fr'
+                    ? "Vous n'avez pas encore soumis d'offre de transport."
+                    : "You haven't submitted any transport offers yet."}
                 </div>
-                <span className="px-2.5 py-1 rounded bg-amber-500/20 text-amber-300 font-bold text-xs border border-amber-500/30">
-                  EN COURS
-                </span>
-              </div>
+              ) : (
+                displayedTrips.map((trip) => (
+                  <div
+                    key={trip.id}
+                    onClick={() => {
+                      onSelectShipment(trip.shipment);
+                      onClose();
+                    }}
+                    className="glass-card p-4 rounded-2xl border border-slate-800 hover:border-emerald-500/40 cursor-pointer flex items-center justify-between"
+                  >
+                    <div>
+                      <span className="text-xs text-emerald-400 font-bold block">
+                        {trip.shipment.origin.city} → {trip.shipment.destination.city}
+                      </span>
+                      <span className="text-sm font-bold text-white">{trip.shipment.title[currentLang]}</span>
+                      <span className="text-xs text-slate-400 block">
+                        {currentLang === 'fr' ? 'Offre :' : 'Offer:'} {formatCAD(trip.offerAmountCAD, currentLang)}
+                        {trip.driverPayoutCAD !== undefined
+                          ? ` • Net 85%: ${formatCAD(trip.driverPayoutCAD, currentLang)}`
+                          : ''}
+                      </span>
+                    </div>
+                    <span
+                      className={`px-2.5 py-1 rounded font-bold text-xs border ${
+                        trip.isAccepted
+                          ? 'bg-emerald-500/20 text-emerald-300 border-emerald-500/30'
+                          : 'bg-amber-500/20 text-amber-300 border-amber-500/30'
+                      }`}
+                    >
+                      {trip.escrowStatus || (trip.isAccepted ? 'ACCEPTÉE' : 'EN ATTENTE')}
+                    </span>
+                  </div>
+                ))
+              )}
             </div>
           )}
 
           {/* Tab 3: Portefeuille & Solde CAD */}
           {activeTab === 'wallet' && (
             <div className="space-y-6">
-              
               {/* Solde Card */}
               <div className="bg-gradient-to-r from-emerald-900/40 to-teal-900/40 p-6 rounded-2xl border border-emerald-500/30 flex flex-col sm:flex-row items-center justify-between gap-4">
                 <div>
@@ -190,24 +243,24 @@ export const UserDashboardModal: React.FC<UserDashboardModalProps> = ({
                     {currentLang === 'fr' ? 'Solde sous séquestre Stripe Connect (CAD $)' : 'Stripe Connect Escrow Balance (CAD $)'}
                   </span>
                   <span className="text-3xl sm:text-4xl font-black bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 to-teal-200">
-                    {formatCAD(currentUser.escrowBalanceCAD, currentLang)}
+                    {formatCAD(escrowBalanceCAD, currentLang)}
                   </span>
                   <span className="text-xs text-slate-400 block mt-1">
-                    Total cumulé gagné : {formatCAD(currentUser.totalEarnedCAD, currentLang)}
+                    Total cumulé gagné : {formatCAD(totalEarnedCAD, currentLang)}
                   </span>
                 </div>
 
                 <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
                   <button
                     onClick={handleRequestPayout}
-                    disabled={payoutRequested || currentUser.escrowBalanceCAD <= 0}
+                    disabled={payoutRequested || escrowBalanceCAD <= 0}
                     className="px-4 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-extrabold text-xs shadow-lg shadow-emerald-500/20 transition-transform transform active:scale-95 disabled:opacity-50 flex items-center justify-center space-x-1.5"
                   >
                     <span>{currentLang === 'fr' ? '⚡ Virement Interac (60s)' : '⚡ Interac e-Transfer (60s)'}</span>
                   </button>
                   <button
                     onClick={handleRequestPayout}
-                    disabled={payoutRequested || currentUser.escrowBalanceCAD <= 0}
+                    disabled={payoutRequested || escrowBalanceCAD <= 0}
                     className="px-4 py-3 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 font-bold text-xs transition-colors disabled:opacity-50"
                   >
                     <span>{currentLang === 'fr' ? 'Virement bancaire' : 'Bank Payout'}</span>

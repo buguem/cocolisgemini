@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Language, Shipment, ShipmentCategory, CanadianProvince } from '../types/shipment';
 import { AutocompleteInput } from './AutocompleteInput';
-import { CanadianCityOption } from '../data/canadianCities';
-import { calculateSuggestedPrice } from '../lib/priceCalculator';
+import { CANADIAN_CITIES, CanadianCityOption } from '../data/canadianCities';
+import { calculateDistanceKm, calculateSuggestedPrice } from '../lib/priceCalculator';
 import { formatCAD } from '../lib/formatters';
 import {
   X,
@@ -97,8 +97,27 @@ export const CreateShipmentWizard: React.FC<CreateShipmentWizardProps> = ({
     }, 1400);
   };
 
-  // Calcul de la distance et du prix suggéré automatique
-  const approxDistanceKm = 255; // Distance estimée entre les 2 villes
+  // Résolution des coordonnées GPS réelles et calcul Haversine de la distance
+  const resolvedOrigin =
+    originObj ||
+    CANADIAN_CITIES.find((c) =>
+      originInput.toLowerCase().includes(c.city.toLowerCase())
+    ) ||
+    CANADIAN_CITIES[0]; // Montréal par défaut
+
+  const resolvedDest =
+    destObj ||
+    CANADIAN_CITIES.find((c) =>
+      destInput.toLowerCase().includes(c.city.toLowerCase())
+    ) ||
+    CANADIAN_CITIES[1]; // Québec par défaut
+
+  const approxDistanceKm = calculateDistanceKm(
+    resolvedOrigin.lat,
+    resolvedOrigin.lng,
+    resolvedDest.lat,
+    resolvedDest.lng
+  );
   const priceCalculation = calculateSuggestedPrice({
     distanceKm: approxDistanceKm,
     lengthCm,
@@ -107,10 +126,10 @@ export const CreateShipmentWizard: React.FC<CreateShipmentWizardProps> = ({
     weightKg,
   });
 
-  // Met à jour le budget recommandé lorsque les dimensions changent
+  // Met à jour le budget recommandé lorsque les dimensions ou le trajet changent
   useEffect(() => {
     setBudgetMax(priceCalculation.suggestedPriceCAD);
-  }, [lengthCm, widthCm, heightCm, weightKg]);
+  }, [lengthCm, widthCm, heightCm, weightKg, approxDistanceKm]);
 
   // Met à jour la photo par défaut si la catégorie change
   useEffect(() => {
@@ -142,16 +161,16 @@ export const CreateShipmentWizard: React.FC<CreateShipmentWizardProps> = ({
         name: `${originCity} (${originPostal}) - ${originFloor} ${originElevator ? '(Ascenseur)' : ''}`,
         city: originCity,
         province: originProvince,
-        lat: originObj?.lat || 45.5017,
-        lng: originObj?.lng || -73.5673,
+        lat: resolvedOrigin.lat,
+        lng: resolvedOrigin.lng,
         postalCode: originPostal,
       },
       destination: {
         name: `${destCity} (${destPostal}) - ${destFloor} ${destElevator ? '(Ascenseur)' : ''}`,
         city: destCity,
         province: destProvince,
-        lat: destObj?.lat || 46.8139,
-        lng: destObj?.lng || -71.2080,
+        lat: resolvedDest.lat,
+        lng: resolvedDest.lng,
         postalCode: destPostal,
       },
       priceCAD: budgetMax,

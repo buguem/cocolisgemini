@@ -22,6 +22,26 @@ export interface PriceCalculationResult {
 
 export const PLATFORM_COMMISSION_RATE = 0.15; // 15% selon section 2.3 du cahier des charges V2
 
+/**
+ * Calcule la distance routière estimée (km) entre 2 coordonnées GPS (formule de Haversine × facteur routier 1.18)
+ */
+export function calculateDistanceKm(
+  lat1: number,
+  lng1: number,
+  lat2: number,
+  lng2: number
+): number {
+  const R = 6371; // Rayon terrestre moyen en km
+  const toRad = (deg: number) => (deg * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  const straightKm = 2 * R * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return Math.max(10, Math.round(straightKm * 1.18));
+}
+
 export function calculateSuggestedPrice({
   distanceKm,
   lengthCm,

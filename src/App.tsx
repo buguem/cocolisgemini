@@ -1,7 +1,19 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { FilterOptions, Language, Shipment } from './types/shipment';
 import { UserProfile } from './types/auth';
 import { MOCK_SHIPMENTS } from './data/mockShipments';
+import {
+  acceptChatOfferApi,
+  createReviewApi,
+  createShipmentApi,
+  deleteShipmentApi,
+  fetchMeApi,
+  fetchShipmentsApi,
+  getAuthToken,
+  loginApi,
+  setAuthToken,
+  verifyProfileApi,
+} from './lib/api';
 import { Navbar } from './components/Navbar';
 import { Hero } from './components/Hero';
 import { SearchForm } from './components/SearchForm';
@@ -47,11 +59,43 @@ export const App: React.FC = () => {
   const [activeModalShipment, setActiveModalShipment] = useState<Shipment | null>(null);
   const [activeChatShipment, setActiveChatShipment] = useState<Shipment | null>(null);
   const [activeDeliveryShipment, setActiveDeliveryShipment] = useState<Shipment | null>(null);
+  const [activeDeliveryCode, setActiveDeliveryCode] = useState<string | null>(null);
   const [activeReviewShipment, setActiveReviewShipment] = useState<Shipment | null>(null);
 
-  // Annonces & sélection
+  // Annonces & sélection (chargées depuis Neon Postgres via /api/shipments)
   const [shipments, setShipments] = useState<Shipment[]>(MOCK_SHIPMENTS);
   const [selectedShipment, setSelectedShipment] = useState<Shipment | null>(MOCK_SHIPMENTS[0]);
+
+  // Chargement initial depuis l'API Neon Postgres
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      try {
+        const liveShipments = await fetchShipmentsApi();
+        if (active && liveShipments.length > 0) {
+          setShipments(liveShipments);
+          setSelectedShipment(liveShipments[0]);
+        }
+      } catch {
+        // Fallback gracieux sur MOCK_SHIPMENTS si l'API n'est pas joignable
+      }
+
+      try {
+        const existingToken = getAuthToken();
+        const user = existingToken
+          ? await fetchMeApi()
+          : await loginApi('sophie.tremblay@cocolis.ca', 'cocolis123');
+        if (active) {
+          setCurrentUser(user);
+        }
+      } catch {
+        // Conserve l'utilisateur démo local si l'API est hors ligne
+      }
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Système de notifications Toast réactif
   const [toastMessage, setToastMessage] = useState<string | null>(null);
@@ -132,7 +176,12 @@ export const App: React.FC = () => {
     showToast(currentLang === 'fr' ? 'Filtres de recherche réinitialisés' : 'Search filters reset');
   };
 
-  const handleDeleteShipment = (id: string) => {
+  const handleDeleteShipment = async (id: string) => {
+    try {
+      await deleteShipmentApi(id);
+    } catch {
+      // ignore if demo/offline
+    }
     setShipments((prev) => prev.filter((s) => s.id !== id));
     showToast(currentLang === 'fr' ? 'Annonce supprimée du réseau' : 'Shipment deleted from network');
   };
@@ -186,6 +235,7 @@ export const App: React.FC = () => {
         onOpenAdminDashboard={() => setViewMode('admin')}
         onOpenVerificationModal={() => setIsVerificationModalOpen(true)}
         onLogout={() => {
+          setAuthToken(null);
           setCurrentUser(null);
           showToast(currentLang === 'fr' ? 'Vous êtes déconnecté' : 'You signed out');
         }}
@@ -325,11 +375,27 @@ export const App: React.FC = () => {
       {/* Shipment Details Modal */}
       <ShipmentModal
         shipment={activeModalShipment}
+        currentUser={currentUser}
         currentLang={currentLang}
         onClose={() => setActiveModalShipment(null)}
         onSuccessToast={showToast}
         onOpenChat={(s) => setActiveChatShipment(s)}
-        onOpenDeliveryCodeModal={(s) => setActiveDeliveryShipment(s)}
+        onOpenDeliveryCodeModal={(s, code) => {
+          setActiveDeliveryCode(code ?? null);
+          setActiveDeliveryShipment(s);
+        }}
+        onOfferAccepted={(shipment, deliveryCode) => {
+          setShipments((prev) =>
+            prev.map((s) => (s.id === shipment.id ? { ...s, status: 'IN_TRANSIT' } : s))
+          );
+          setActiveDeliveryCode(deliveryCode);
+          setActiveDeliveryShipment(shipment);
+          showToast(
+            currentLang === 'fr'
+              ? `Offre acceptée ! Code de livraison généré : ${deliveryCode}`
+              : `Offer accepted! Delivery code generated: ${deliveryCode}`
+          );
+        }}
       />
 
       {/* Wizard V2 Création d'Annonce 4 Étapes */}
@@ -337,9 +403,15 @@ export const App: React.FC = () => {
         isOpen={isWizardOpen}
         currentLang={currentLang}
         onClose={() => setIsWizardOpen(false)}
-        onAddShipment={(newShipment) => {
-          setShipments((prev) => [newShipment, ...prev]);
-          setSelectedShipment(newShipment);
+        onAddShipment={async (newShipment) => {
+          let saved = newShipment;
+          try {
+            saved = await createShipmentApi(newShipment);
+          } catch {
+            // fallback local si hors ligne
+          }
+          setShipments((prev) => [saved, ...prev]);
+          setSelectedShipment(saved);
           showToast(
             currentLang === 'fr' 
               ? 'Annonce créée avec succès et géolocalisée sur la carte !' 
@@ -355,12 +427,27 @@ export const App: React.FC = () => {
         currentUser={currentUser}
         currentLang={currentLang}
         onClose={() => setActiveChatShipment(null)}
-        onAcceptOffer={(shipment, price) => {
-          showToast(
-            currentLang === 'fr'
-              ? `Offre de ${price} $ acceptée ! Code unique de livraison généré.`
-              : `Offer of $${price} accepted! Unique delivery code generated.`
-          );
+        onAcceptOffer={async (shipment, price) => {
+          try {
+            const res = await acceptChatOfferApi(shipment.id, price);
+            setShipments((prev) =>
+              prev.map((s) => (s.id === shipment.id ? { ...s, status: 'IN_TRANSIT' } : s))
+            );
+            setActiveDeliveryCode(res.deliveryCode);
+            showToast(
+              currentLang === 'fr'
+                ? `Offre de ${price} $ acceptée ! Code séquestre : ${res.deliveryCode}`
+                : `Offer of $${price} accepted! Escrow code: ${res.deliveryCode}`
+            );
+          } catch (err) {
+            showToast(
+              err instanceof Error
+                ? err.message
+                : currentLang === 'fr'
+                  ? "Impossible d'accepter cette offre."
+                  : 'Unable to accept offer.'
+            );
+          }
           setActiveDeliveryShipment(shipment);
         }}
       />
@@ -369,8 +456,12 @@ export const App: React.FC = () => {
       <DeliveryConfirmationModal
         isOpen={!!activeDeliveryShipment}
         shipment={activeDeliveryShipment}
+        generatedDeliveryCode={activeDeliveryCode}
         currentLang={currentLang}
-        onClose={() => setActiveDeliveryShipment(null)}
+        onClose={() => {
+          setActiveDeliveryShipment(null);
+          setActiveDeliveryCode(null);
+        }}
         onConfirmDelivery={handleConfirmDelivery}
         onOpenReview={(s) => setActiveReviewShipment(s)}
       />
@@ -381,11 +472,18 @@ export const App: React.FC = () => {
         shipment={activeReviewShipment}
         currentLang={currentLang}
         onClose={() => setActiveReviewShipment(null)}
-        onSubmitReview={(rating, comment) => {
+        onSubmitReview={async (rating, comment) => {
+          if (activeReviewShipment) {
+            try {
+              await createReviewApi(activeReviewShipment.id, rating, comment);
+            } catch {
+              // ignore if offline
+            }
+          }
           showToast(
             currentLang === 'fr'
-              ? 'Merci ! Votre avis 5★ a été publié.'
-              : 'Thank you! Your 5★ review has been published.'
+              ? `Merci ! Votre avis ${rating}★ a été publié.`
+              : `Thank you! Your ${rating}★ review has been published.`
           );
         }}
       />
@@ -396,7 +494,13 @@ export const App: React.FC = () => {
         currentUser={currentUser}
         currentLang={currentLang}
         onClose={() => setIsVerificationModalOpen(false)}
-        onVerified={() => {
+        onVerified={async () => {
+          try {
+            const updatedUser = await verifyProfileApi();
+            setCurrentUser(updatedUser);
+          } catch {
+            // ignore if offline
+          }
           showToast(
             currentLang === 'fr'
               ? 'Profil Vérifié 🛡️ activé avec succès !'

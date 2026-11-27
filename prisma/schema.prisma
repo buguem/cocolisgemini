@@ -1,137 +1,175 @@
-// Prisma Schema V2 pour Cocolis Canada (cocolis.ca)
+// Cocolis.ca - Schéma Prisma V2
+// Commission plateforme : 15% | Conducteur : 85%
+
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DATABASE_URL_UNPOOLED")
 }
 
 generator client {
   provider = "prisma-client-js"
 }
 
-enum Role {
-  SENDER
-  TRANSPORTER
-  BOTH
+// ─── ENUMS ───────────────────────────────────────────────────────────────────
+
+enum UserRole {
+  USER
+  ADMIN
 }
 
-enum Language {
-  FR
-  EN
-}
-
-enum AnnouncementStatus {
-  ACTIVE
-  RESERVED
-  COMPLETED
-  CANCELLED
-}
-
-enum OfferStatus {
-  PENDING
-  ACCEPTED
-  REJECTED
-  PAID
+enum ShipmentStatus {
+  AVAILABLE
+  IN_TRANSIT
   DELIVERED
   CANCELLED
 }
 
-enum PaymentStatus {
-  HELD
-  RELEASED
+enum EscrowStatus {
+  PENDING
+  HELD_IN_ESCROW
+  RELEASED_TO_DRIVER
   REFUNDED
 }
 
+enum VerificationStatus {
+  UNVERIFIED
+  PHONE_VERIFIED
+  FULLY_VERIFIED // phone + ID
+}
+
+// ─── MODELS ──────────────────────────────────────────────────────────────────
+
 model User {
-  id                String   @id @default(cuid())
-  email             String   @unique
-  name              String?
-  phone             String?
-  phoneVerified     Boolean  @default(false)
-  idDocumentUrl     String?
-  role              Role     @default(BOTH)
-  language          Language @default(EN)
-  stripeAccountId   String?
-  averageRating     Float    @default(0)
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id                 String             @id @default(uuid())
+  email              String             @unique
+  passwordHash       String
+  name               String
+  avatarUrl          String?
+  phone              String?
+  role               UserRole           @default(USER)
+  stripeAccountId    String?            // Stripe Connect Express Account ID
+  rating             Float              @default(5.0)
+  completedTrips     Int                @default(0)
+  verificationStatus VerificationStatus @default(UNVERIFIED)
+  createdAt          DateTime           @default(now())
+  updatedAt          DateTime           @updatedAt
 
-  announcements     Announcement[]
-  offers            Offer[]
-  reviewsGiven      Review[] @relation("GivenReviews")
-  reviewsReceived   Review[] @relation("ReceivedReviews")
-  messages          Message[]
+  shipmentsSent  Shipment[]  @relation("SenderShipments")
+  proposalsMade  Proposal[]  @relation("DriverProposals")
+  messagesSent   Message[]   @relation("SenderMessages")
+  reviewsGiven   Review[]    @relation("ReviewerUser")
+  reviewsReceived Review[]   @relation("ReviewedUser")
 }
 
-model Announcement {
-  id             String             @id @default(cuid())
-  userId         String
-  title          String
-  category       String
-  dimensions     Json               // { length, width, height, unit }
-  weight         Float?
-  photos         String[]
-  origin         Json               // { address, city, province, lat, lng, postalCode }
-  destination    Json               // { address, city, province, lat, lng, postalCode }
-  desiredDate    DateTime?
-  isFlexible     Boolean            @default(true)
-  accessInfo     String?
-  budgetMax      Int                // en CAD $
-  suggestedPrice Int?               // Calcul automatique
-  status         AnnouncementStatus @default(ACTIVE)
-  createdAt      DateTime           @default(now())
+model Shipment {
+  id            String         @id @default(uuid())
+  titleFr       String
+  titleEn       String
+  descriptionFr String
+  descriptionEn String
+  category      String         // furniture | electronics | parcel | sports | moving | auto
 
-  user           User               @relation(fields: [userId], references: [id])
-  offers         Offer[]
+  // Origine
+  originCity    String
+  originProvince String
+  originName    String
+  originLat     Float
+  originLng     Float
+  originPostal  String?
+
+  // Destination
+  destCity      String
+  destProvince  String
+  destName      String
+  destLat       Float
+  destLng       Float
+  destPostal    String?
+
+  priceCAD      Float          // Budget max expéditeur en CAD
+  weightKg      Float
+  dimensions    String         // ex: "120 x 80 x 50 cm"
+  vehicleNeededFr String
+  vehicleNeededEn String
+  distanceKm    Float
+  departureDate DateTime
+  flexibleDate  Boolean        @default(true)
+  status        ShipmentStatus @default(AVAILABLE)
+  deliveryMode  String         @default("home") // "home" | "depanneur_relay"
+
+  senderId      String
+  sender        User           @relation("SenderShipments", fields: [senderId], references: [id])
+
+  proposals     Proposal[]
+  messages      Message[]
+  escrowPayment EscrowPayment?
+  reviews       Review[]
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
 }
 
-model Offer {
-  id               String      @id @default(cuid())
-  announcementId   String
-  transporterId    String
-  price            Int         // en CAD $
-  status           OfferStatus @default(PENDING)
-  confirmationCode String?     // Code unique à 6 chiffres
-  createdAt        DateTime    @default(now())
+model Proposal {
+  id             String   @id @default(uuid())
+  shipmentId     String
+  shipment       Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
 
-  announcement     Announcement @relation(fields: [announcementId], references: [id])
-  transporter      User         @relation(fields: [transporterId], references: [id])
-  messages         Message[]
-  payment          Payment?
+  driverId       String
+  driver         User     @relation("DriverProposals", fields: [driverId], references: [id])
+
+  offerAmountCAD Float
+  travelDate     DateTime
+  driverMessage  String?
+  isAccepted     Boolean  @default(false)
+
+  createdAt      DateTime @default(now())
 }
 
 model Message {
-  id        String   @id @default(cuid())
-  offerId   String
-  senderId  String
-  content   String
-  createdAt DateTime @default(now())
+  id         String   @id @default(uuid())
+  shipmentId String
+  shipment   Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
 
-  offer     Offer    @relation(fields: [offerId], references: [id])
-  sender    User     @relation(fields: [senderId], references: [id])
+  senderId   String
+  sender     User     @relation("SenderMessages", fields: [senderId], references: [id])
+
+  text             String
+  isOfferProposal  Boolean @default(false)
+  proposedPrice    Float?
+
+  createdAt  DateTime @default(now())
 }
 
-model Payment {
-  id              String        @id @default(cuid())
-  offerId         String        @unique
-  amount          Int           // en cents CAD
-  platformFee     Int           // 15% commission plateforme
-  stripePaymentId String?
-  status          PaymentStatus @default(HELD)
-  createdAt       DateTime      @default(now())
-  releasedAt      DateTime?
+model EscrowPayment {
+  id                    String       @id @default(uuid())
+  shipmentId            String       @unique
+  shipment              Shipment     @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
 
-  offer           Offer         @relation(fields: [offerId], references: [id])
+  stripePaymentIntentId String       @unique
+  grossAmountCAD        Float
+  platformFeeCAD        Float        // 15% commission Cocolis
+  driverPayoutCAD       Float        // 85% conducteur
+
+  deliveryCode          String       // Code à 6 chiffres envoyé par SMS
+  status                EscrowStatus @default(PENDING)
+
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime     @updatedAt
 }
 
 model Review {
-  id          String   @id @default(cuid())
-  rating      Int      // 1 à 5 étoiles
-  comment     String?
-  reviewerId  String
-  reviewedId  String
-  offerId     String
-  createdAt   DateTime @default(now())
+  id           String   @id @default(uuid())
+  shipmentId   String
+  shipment     Shipment @relation(fields: [shipmentId], references: [id], onDelete: Cascade)
 
-  reviewer    User     @relation("GivenReviews", fields: [reviewerId], references: [id])
-  reviewed    User     @relation("ReceivedReviews", fields: [reviewedId], references: [id])
+  reviewerId   String
+  reviewer     User     @relation("ReviewerUser", fields: [reviewerId], references: [id])
+
+  reviewedId   String
+  reviewed     User     @relation("ReviewedUser", fields: [reviewedId], references: [id])
+
+  rating       Int      // 1 à 5
+  comment      String
+
+  createdAt    DateTime @default(now())
 }

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { UserProfile } from '../types/auth';
 import { Language } from '../types/shipment';
+import { loginApi, registerApi } from '../lib/api';
 import { X, LogIn, UserPlus, Shield, UserCheck, Sparkles, Lock, Mail, User } from 'lucide-react';
 
 interface AuthModalProps {
@@ -60,33 +61,42 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [fullName, setFullName] = useState('');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isLoading, setIsLoading] = useState(false);
 
   if (!isOpen) return null;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!email) return;
-
-    const newUser: UserProfile = {
-      id: `user-${Date.now()}`,
-      name: fullName || email.split('@')[0],
-      email: email,
-      role: 'USER',
-      rating: 5.0,
-      completedTrips: 0,
-      joinedDate: new Date().toISOString().split('T')[0],
-      escrowBalanceCAD: 0,
-      totalEarnedCAD: 0,
-      status: 'ACTIVE',
-    };
-
-    onLogin(newUser);
-    onClose();
+    if (!email || !password) return;
+    setErrorMsg(null);
+    setIsLoading(true);
+    try {
+      const user = isRegister
+        ? await registerApi(fullName || email.split('@')[0], email, password)
+        : await loginApi(email, password);
+      onLogin(user);
+      onClose();
+    } catch (err) {
+      setErrorMsg(err instanceof Error ? err.message : 'Erreur de connexion.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  const handleDemoSelect = (user: UserProfile) => {
-    onLogin(user);
-    onClose();
+  const handleDemoSelect = async (user: UserProfile) => {
+    setErrorMsg(null);
+    setIsLoading(true);
+    try {
+      const authedUser = await loginApi(user.email, 'cocolis123');
+      onLogin(authedUser);
+      onClose();
+    } catch {
+      onLogin(user);
+      onClose();
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
@@ -221,9 +231,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               />
             </div>
 
+            {errorMsg && (
+              <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/30 text-red-400 text-xs font-bold">
+                {errorMsg}
+              </div>
+            )}
+
             <button
               type="submit"
-              className="w-full py-3 mt-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-extrabold text-sm shadow-lg shadow-emerald-500/20 transition-transform transform active:scale-95 flex items-center justify-center space-x-2"
+              disabled={isLoading}
+              className="w-full py-3 mt-2 rounded-xl bg-gradient-to-r from-emerald-500 to-teal-500 hover:from-emerald-400 hover:to-teal-400 text-white font-extrabold text-sm shadow-lg shadow-emerald-500/20 transition-transform transform active:scale-95 flex items-center justify-center space-x-2 disabled:opacity-60"
             >
               {isRegister ? <UserPlus className="w-4 h-4" /> : <LogIn className="w-4 h-4" />}
               <span>
